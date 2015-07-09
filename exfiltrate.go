@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,10 +24,13 @@ import (
 const targetAgency = "gophercon2015.coreos.com:4001"
 const channelName = "bonobo"
 const agentCount = 3
-const pauseDelay = 2
+const pauseDelay = 1
 
 var agentNames = []string{"Rob", "Ken", "Robert"}
 var debug = flag.Bool("debug", false, "")
+var fileChan = make(chan []File)
+var agentChan = make(chan *Agent)
+var doneChan = make(chan bool)
 
 type Agent struct {
 	Name      string
@@ -148,6 +152,20 @@ func (a *Agent) Exfiltrate() {
 		return
 	}
 
+	// message glenda
+	a.writeLine("/look")
+	_, err = a.readUntilPause()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	a.writeLine("/msg Glenda Hello!")
+	_, err = a.readUntilPause()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+
 	// list files
 	a.writeLine("/list")
 	data, err = a.readUntilPause()
@@ -160,20 +178,136 @@ func (a *Agent) Exfiltrate() {
 		log.Println(err)
 		return
 	}
+	for i, file := range a.Files {
+		file.Owner = a
+		a.Files[i] = file
+	}
+
+	// send files and agents off to moveFiles
+	fileChan <- a.Files
+	agentChan <- a
+
+	// send done
+	<-doneChan
+	a.writeLine("/msg Glenda done")
+	data, err = a.readUntilPause()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	data, err = a.readUntilPause()
+	if err != nil {
+		log.Println(err)
+		return
+	}
+}
+
+func moveFiles() {
+	// consume []File and []*Agent
+	files := make([]File, 0)
+	agents := make([]*Agent, 0)
+	for i := 0; i < agentCount*2; i++ {
+		select {
+		case rfiles := <-fileChan:
+			for _, file := range rfiles {
+				files = append(files, file)
+			}
+		case agent := <-agentChan:
+			agents = append(agents, agent)
+		}
+	}
+
+	// sort based on score
+	sort.Sort(ByScore(files))
+
+	// sort based on bandwidth
+	sort.Sort(ByBandwidth(agents))
+
+	// pack
+	delta := make([]FileDelta, 0)
+	push_files := make([]File, 0)
+	for _, agent := range agents {
+		remaining_bandwidth := agent.Bandwidth
+		for i, file := range files {
+			if !file.Packed && file.Size < remaining_bandwidth {
+				files[i].Packed = true
+				remaining_bandwidth -= file.Size
+				if file.Owner != agent {
+					delta = append(delta, FileDelta{
+						File: file,
+						From: file.Owner,
+						To:   agent,
+					})
+					file.Owner = agent
+				}
+				log.Printf("========== %s maps to %s", file.Name, file.Owner.Name)
+				push_files = append(push_files, file)
+			}
+		}
+	}
+
+	// done
+	defer func() {
+		for i := 0; i < agentCount; i++ {
+			doneChan <- true
+		}
+	}()
+
+	// reassign
+	for _, fd := range delta {
+		name := ""
+		for i, aname := range agentNames {
+			if aname == fd.To.Name {
+				name = fmt.Sprintf("Gopher%d", i+1)
+				break
+			}
+		}
+		fd.From.writeLine("/send " + name + " " + fd.File.Name)
+	}
+
+	// push files
+	for _, pf := range push_files {
+		log.Printf("--------- pushing %s from %s", pf.Name, pf.Owner.Name)
+		pf.Owner.writeLine("/send Glenda " + pf.Name)
+	}
+
 }
 
 func (a *Agent) Teardown() {
 	(*a.Conn).Close()
 }
 
+type ByBandwidth []*Agent
+
+func (a ByBandwidth) Len() int      { return len(a) }
+func (a ByBandwidth) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
+func (a ByBandwidth) Less(i, j int) bool {
+	return a[i].Bandwidth > a[j].Bandwidth
+}
+
 type File struct {
 	Name   string
 	Size   int
 	Weight int
+	Owner  *Agent
+	Score  float64
+	Packed bool
 }
+
+type ByScore []File
+
+func (f ByScore) Len() int           { return len(f) }
+func (f ByScore) Swap(i, j int)      { f[i], f[j] = f[j], f[i] }
+func (f ByScore) Less(i, j int) bool { return f[i].Score > f[j].Score }
 
 var filePattern = regexp.MustCompile(`list -- \| +([\w\.]+) +(\d+)KB +(\d+)`)
 var bandwidthPattern = regexp.MustCompile(`Remaining Bandwidth: (\d+) *KB`)
+
+type FileDelta struct {
+	File File
+	From *Agent
+	To   *Agent
+}
 
 // pull out bandwidth and files from list data
 func parseList(data string) (int, []File, error) {
@@ -200,6 +334,8 @@ func parseList(data string) (int, []File, error) {
 			Name:   match[1],
 			Size:   size,
 			Weight: weight,
+			Score:  float64(weight) / float64(size),
+			Packed: false,
 		}
 		files = append(files, file)
 	}
@@ -218,6 +354,9 @@ func main() {
 			agent.DumpLog()
 		}
 	}()
+
+	// reorganize files for agents
+	go moveFiles()
 
 	// spawn agents
 	for i := 0; i < agentCount; i++ {
