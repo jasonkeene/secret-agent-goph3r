@@ -20,7 +20,8 @@ const agentCount = 3
 const pauseDelay = 1
 
 var agentNames = []string{"Rob", "Ken", "Robert"}
-var debug = flag.Bool("debug", false, "")
+var debug = flag.Bool("debug", false, "Shows verbose debug output.")
+var dump_log = flag.Bool("log", true, "Dumps the message log.")
 
 type Agent struct {
 	Name      string
@@ -179,17 +180,13 @@ func (a *Agent) Exfiltrate(tv TV) {
 
 	// send done
 	<-tv.doneChan
+	_, err = a.readUntilPause()
+	if err != nil {
+		log.Println(err)
+		return
+	}
 	a.writeLine("/msg Glenda done")
-	data, err = a.readUntilPause()
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	data, err = a.readUntilPause()
-	if err != nil {
-		log.Println(err)
-		return
-	}
+	_, _ = a.readUntilPause()
 }
 
 func (a *Agent) Teardown() {
@@ -378,22 +375,24 @@ func parseList(data string) (int, []*File, error) {
 
 func main() {
 	flag.Parse()
-	agents := make([]*Agent, 0)
-	wg := sync.WaitGroup{}
-	wg.Add(agentCount)
 
 	// dump logs
-	defer func() {
-		for _, agent := range agents {
-			agent.DumpLog()
-		}
-	}()
+	agents := make([]*Agent, 0)
+	if *debug || *dump_log {
+		defer func() {
+			for _, agent := range agents {
+				agent.DumpLog()
+			}
+		}()
+	}
 
 	// reorganize files for agents
 	tv := NewTV()
-	go moveFiles(tv)
+	go moveFiles(tv) // this will block until agents are ready with files
 
 	// spawn agents
+	wg := sync.WaitGroup{}
+	wg.Add(agentCount)
 	for i := 0; i < agentCount; i++ {
 		agent, err := NewAgent(agentNames[i], &wg)
 		if err != nil {
@@ -404,6 +403,6 @@ func main() {
 		go agent.Exfiltrate(tv)
 	}
 
-	// block till agents are done running
+	// block until agents are done running
 	wg.Wait()
 }

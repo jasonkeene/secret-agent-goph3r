@@ -5,7 +5,7 @@
 go run exfiltrate.go
 ```
 
-To log all reads and writes as they happen:
+For more verbose output:
 
 ```bash
 go run exfiltrate.go -debug
