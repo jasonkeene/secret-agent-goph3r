@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -25,7 +26,7 @@ const agentCount = 3
 const pauseDelay = 2
 
 var agentNames = []string{"Rob", "Ken", "Robert"}
-var debug = true
+var debug = flag.Bool("debug", false, "")
 
 type Agent struct {
 	Name      string
@@ -84,7 +85,7 @@ func (a *Agent) readLine() (string, error) {
 	data = strings.TrimSuffix(data, "\r")
 	a.Log = append(a.Log, "<- "+data)
 
-	if debug {
+	if *debug {
 		log.Printf("%s: read %#v", a.Name, data)
 	}
 	return data, nil
@@ -109,7 +110,7 @@ func (a *Agent) readUntilPause() (string, error) {
 }
 
 func (a *Agent) writeLine(data string) {
-	if debug {
+	if *debug {
 		log.Printf("%s: writing %#v", a.Name, data)
 	}
 	a.Log = append(a.Log, "-> "+data)
@@ -123,7 +124,7 @@ func (a *Agent) DumpLog() {
 }
 
 func (a *Agent) Exfiltrate() {
-	if debug {
+	if *debug {
 		log.Printf("agent %s is exfiltrating %s", a.Name, targetAgency)
 	}
 	defer a.Wg.Done()
@@ -154,7 +155,6 @@ func (a *Agent) Exfiltrate() {
 		log.Println(err)
 		return
 	}
-	fmt.Printf("%#v", data)
 	a.Bandwidth, a.Files, err = parseList(data)
 	if err != nil {
 		log.Println(err)
@@ -207,6 +207,7 @@ func parseList(data string) (int, []File, error) {
 }
 
 func main() {
+	flag.Parse()
 	agents := make([]*Agent, 0)
 	wg := sync.WaitGroup{}
 	wg.Add(agentCount)

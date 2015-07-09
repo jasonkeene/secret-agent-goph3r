@@ -5,8 +5,8 @@
 go run exfiltrate.go
 ```
 
-To dump all traffic for each agent on exit:
+To log all reads and writes as they happen:
 
 ```bash
-go run exfiltrate.go -v
+go run exfiltrate.go -debug
 ```
